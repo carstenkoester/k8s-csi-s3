@@ -151,6 +151,61 @@ You can check POSIX compatibility matrix here: https://github.com/yandex-cloud/g
 * Doesn't create directory objects like s3fs or GeeseFS
 * May hang :-)
 
+## Advanced configuration
+
+### IAM roles with OIDC
+
+As an alternative to use static, long-lived credentials to access the S3 bucket, you can use a Kubernetes ServiceAccount token and OIDC integration to assume an IAM role. **At the time of writing, this has only been tested with AWS as an identity provider**. This requires configuration on the Kubernetes cluster as well as the target AWS account.
+
+#### Prerequisites
+
+Configuring OIDC integration between your Kubernetes cluster and the AWS account is outside of the scope of this document. For EKS clusters, there is published documentation at <https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html>. For other clusters (including non-EKS clusters in AWS, clusters in other clouds, and clusters operated on-prem), the following external links might provide helpful guidance:
+
+  - <https://reece.tech/posts/oidc-k8s-to-aws/>
+  - <https://medium.com/@channyein/kubernetes-self-managed-cluster-with-aws-iam-oidc-e483d4dc0df2>
+  - <https://hangarau.space/providing-access-to-aws-resources-from-kubernetes-pods-using-oidc/>
+
+You should have OIDC integration between your Kubernetes cluster and AWS completed before proceeding. The following files included in this repository can be used to verify the integration:
+
+ 1. If your CSI ServiceAccount does not already exist, apply the file `deploy/kubernetes/examples/oidc-test/serviceaccount.yaml`:
+
+    ```
+    $ kubectl apply -f deploy/kubernetes/examples/oidc-test/serviceaccount.yaml
+    ```
+
+    Skip this step if your ServiceAccount already exists
+
+ 2. Edit `deploy/kubernetes/examples/oidc-test/pod.yaml` and replace `__INSERT_YOUR_OIDC_AUDIENCE_HERE__` with your OIDC audience, and replace `__INSERT_YOUR_IAM_ROLE_ARN_HERE__` with your IAM role ARN. **If you're using Amazon EKS with pre-configured IAM-Roles-for-Serviceaccounts configuration, then the audience is `sts.amazonaws.com`**. Then apply this pod:
+
+    ```
+    $ kubectl apply -f deploy/kubernetes/examples/oidc-test/pod.yaml
+    ```
+
+ 3. Execute a shell inside that pod. Within that shell, you should be able to access your S3 buckets:
+
+    ```
+    $ kubectl exec -it -n kube-system test-oidc -- bash
+    bash-4.2# aws s3 ls
+    2020-01-01 00:00:00 bucket1
+    2021-01-01 00:00:00 bucket2
+    bash-4.2# exit
+    ```
+
+ 4. Resolve any errors or issues before proceeding.
+
+ 5. Remove the test pod, and the serviceaccount if it was created in step 1.
+
+#### Usage
+
+When OIDC integration between your Kubernetes cluster and the AWS account is known to be working, then you can utilize the integration as follows:
+
+ - When deploying the CSI plugin via the Helm chart:
+     - Set `oidc.audience` to the OIDC audience you're accepting in the AWS OIDC integration
+     - set `secret.iamRoleArn` to your IAM role ARN
+     - Leave the `secret.accessKey` and `secret.secretKey` values blank
+ - When not using the Helm chart, you'd currently need to modify `deploy/kubernetes/csi-s3.yaml` and `deploy/kubernetes/provisioner.yaml` and add [Kubernetes ServiceAccount token projection](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#launch-a-pod-using-service-account-token-projection) to the manifest. Set the `AWS_WEB_IDENTITY_TOKEN_FILE` environment variable to the path where the projected token is mounted.
+ - In any Kubernetes Secret you're creating with S3 credentials, leave `accessKeyID` and `secretAccessKey` empty, and instead, include an `iamRoleArn` value with the ARN of your IAM role. If you use different secrets (for example, when doing Static Provisioning of buckets in different AWS accounts), your secrets can point to different IAM roles as needed.
+
 ## Troubleshooting
 
 ### Issues while creating PVC

@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-oidc
+  namespace: kube-system
+spec:
+  serviceAccount: csi-s3
+  hostNetwork: true
+  containers:
+    - name: csi-s3
+      image: amazon/aws-cli:2.13.3
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - "sleep infinity"
+      env:
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/tokens/csi-s3-oidc-token
+        - name: AWS_ROLE_ARN
+          value: "__INSERT_YOUR_IAM_ROLE_ARN_HERE__"
+      volumeMounts:
+        - name: csi-s3-oidc-token
+          mountPath: /var/run/secrets/tokens
+  volumes:
+    - name: csi-s3-oidc-token
+      projected:
+        defaultMode: 420
+        sources:
+        - serviceAccountToken:
+            audience: __INSERT_YOUR_OIDC_AUDIENCE_HERE__
+            expirationSeconds: 7200
+            path: csi-s3-oidc-token

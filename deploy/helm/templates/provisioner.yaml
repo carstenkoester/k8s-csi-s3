@@ -108,9 +108,27 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- if .Values.oidc.audience }}
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/tokens/csi-s3-oidc-token
+            {{- end }}
           volumeMounts:
             - name: socket-dir
               mountPath: {{ .Values.kubeletPath }}/plugins/ru.yandex.s3.csi
+            {{- if .Values.oidc.audience }}
+            - name: csi-s3-oidc-token
+              mountPath: /var/run/secrets/tokens
+            {{- end }}
       volumes:
         - name: socket-dir
           emptyDir: {}
+        {{- if .Values.oidc.audience }}
+        - name: csi-s3-oidc-token
+          projected:
+            defaultMode: 420
+            sources:
+            - serviceAccountToken:
+                audience: {{ .Values.oidc.audience }}
+                expirationSeconds: 7200
+                path: csi-s3-oidc-token
+        {{- end }}

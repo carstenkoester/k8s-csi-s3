@@ -3,12 +3,19 @@ package s3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"os"
 
 	"github.com/golang/glog"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
 )
 
 const (
@@ -25,6 +32,7 @@ type s3Client struct {
 type Config struct {
 	AccessKeyID     string
 	SecretAccessKey string
+	SessionToken    string
 	Region          string
 	Endpoint        string
 	Mounter         string
@@ -52,7 +60,7 @@ func NewClient(cfg *Config) (*s3Client, error) {
 		endpoint = u.Hostname() + ":" + u.Port()
 	}
 	minioClient, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(client.Config.AccessKeyID, client.Config.SecretAccessKey, ""),
+		Creds:  credentials.NewStaticV4(client.Config.AccessKeyID, client.Config.SecretAccessKey, client.Config.SessionToken),
 		Secure: ssl,
 	})
 	if err != nil {
@@ -63,15 +71,76 @@ func NewClient(cfg *Config) (*s3Client, error) {
 	return client, nil
 }
 
+func AssumeRoleWithWebIdentity(token string, iamRoleArn string) (*string, *string, *string, error) {
+	svc := sts.New(session.New())
+	input := &sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          aws.String(iamRoleArn),
+		RoleSessionName:  aws.String("csi-s3"),
+		WebIdentityToken: aws.String(token),
+	}
+
+	result, err := svc.AssumeRoleWithWebIdentity(input)
+	if err != nil {
+		var err_return error
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case sts.ErrCodeMalformedPolicyDocumentException:
+				err_return = fmt.Errorf(sts.ErrCodeMalformedPolicyDocumentException, aerr.Error())
+			case sts.ErrCodePackedPolicyTooLargeException:
+				err_return = fmt.Errorf(sts.ErrCodePackedPolicyTooLargeException, aerr.Error())
+			case sts.ErrCodeIDPRejectedClaimException:
+				err_return = fmt.Errorf(sts.ErrCodeIDPRejectedClaimException, aerr.Error())
+			case sts.ErrCodeIDPCommunicationErrorException:
+				err_return = fmt.Errorf(sts.ErrCodeIDPCommunicationErrorException, aerr.Error())
+			case sts.ErrCodeInvalidIdentityTokenException:
+				err_return = fmt.Errorf(sts.ErrCodeInvalidIdentityTokenException, aerr.Error())
+			case sts.ErrCodeExpiredTokenException:
+				err_return = fmt.Errorf(sts.ErrCodeExpiredTokenException, aerr.Error())
+			case sts.ErrCodeRegionDisabledException:
+				err_return = fmt.Errorf(sts.ErrCodeRegionDisabledException, aerr.Error())
+			default:
+				err_return = fmt.Errorf(aerr.Error())
+			}
+		} else {
+			// Print the error, cast err to awserr.Error to get the Code and
+			// Message from an error.
+			err_return = fmt.Errorf(err.Error())
+		}
+		return nil, nil, nil, err_return
+	}
+	return result.Credentials.AccessKeyId, result.Credentials.SecretAccessKey, result.Credentials.SessionToken, nil
+}
+
+
 func NewClientFromSecret(secret map[string]string) (*s3Client, error) {
-	return NewClient(&Config{
+	config := &Config{
 		AccessKeyID:     secret["accessKeyID"],
 		SecretAccessKey: secret["secretAccessKey"],
+		SessionToken:    "",
 		Region:          secret["region"],
 		Endpoint:        secret["endpoint"],
 		// Mounter is set in the volume preferences, not secrets
 		Mounter: "",
-	})
+	}
+
+	if secret["iamRoleArn"] != "" {
+		if os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") == "" {
+			return nil, errors.New("Secret references IAM role, but environment var AWS_WEB_IDENTITY_TOKEN_FILE undefined")
+		}
+		token, err := os.ReadFile(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE"))
+		if err != nil {
+			return nil, err
+		}
+		accessKeyID, secretAccessKey, sessionToken, err := AssumeRoleWithWebIdentity(string(token), secret["iamRoleArn"])
+		if err != nil {
+			return nil, err
+		}
+		config.AccessKeyID = *accessKeyID
+		config.SecretAccessKey = *secretAccessKey
+		config.SessionToken = *sessionToken
+	}
+
+	return NewClient(config)
 }
 
 func (client *s3Client) BucketExists(bucketName string) (bool, error) {

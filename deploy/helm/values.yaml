@@ -35,8 +35,14 @@ secret:
   accessKey: ""
   # S3 Secret Key
   secretKey: ""
+  # IAM role ARN, used with OIDC integration
+  iamRoleArn: ""
   # Endpoint
   endpoint: https://storage.yandexcloud.net
+
+oidc:
+  # OIDC audience, for OIDC integration and the ability to assume IAM roles
+  audience: ""
 
 tolerations:
   all: false
